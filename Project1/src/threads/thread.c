@@ -28,6 +28,10 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+/* List of all sleeping process. Processes are added to this list
+   when timer_sleep on a thread is called. */
+static struct list sleep_list;
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -92,6 +96,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleep_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -123,6 +128,7 @@ void
 thread_tick (void) 
 {
   struct thread *t = thread_current ();
+  struct list_elem *e;
 
   /* Update statistics. */
   if (t == idle_thread)
@@ -133,6 +139,26 @@ thread_tick (void)
 #endif
   else
     kernel_ticks++;
+
+  /* 
+   * No need to disable interrupt before accessing sleep_list as the function is called from interrupt context 
+   * where interrupts are already OFF.
+   * Reduce the sleep ticks for each sleeping thread, if sleep ticks of a therad is expired remove it from sleep_list 
+   * and add to the ready queue
+   */
+  for (e = list_begin (&sleep_list); e != list_end (&sleep_list); e = list_next (e))
+  {
+      struct thread *t = list_entry (e, struct thread, sleep_elem);
+      if (t->sleep_ticks > 0)
+      {
+        t->sleep_ticks--;
+        if (t->sleep_ticks == 0)
+        {
+          list_remove (&t->sleep_elem);
+          thread_unblock(t);
+        }
+      }
+  }
 
   /* Enforce preemption. */
   if (++thread_ticks >= TIME_SLICE)
@@ -579,6 +605,25 @@ allocate_tid (void)
   return tid;
 }
 
+void 
+thread_sleep(int64_t ticks)
+{
+  struct thread *t = thread_current();
+  enum intr_level old_level;
+
+  if (ticks <= 0)
+    return;
+
+  t->sleep_ticks = ticks;
+
+  old_level = intr_disable();
+
+  list_push_back(&sleep_list, &t->sleep_elem);
+
+  thread_block();
+
+  intr_set_level(old_level);
+}
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
